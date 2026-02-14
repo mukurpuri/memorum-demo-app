@@ -1,0 +1,30 @@
+{
+  "name": "acme-saas-platform",
+  "version": "1.0.0",
+  "description": "ACME SaaS Platform - Demo project for Memorum",
+  "main": "index.js",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "test": "jest",
+    "lint": "eslint ."
+  },
+  "dependencies": {
+    "next": "^14.0.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "@prisma/client": "^5.0.0",
+    "jsonwebtoken": "^9.0.0",
+    "bcrypt": "^5.1.0",
+    "stripe": "^14.0.0",
+    "zod": "^3.22.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0",
+    "jest": "^29.0.0",
+    "@types/node": "^20.0.0",
+    "@types/react": "^18.2.0",
+    "prisma": "^5.0.0"
+  }
+}
