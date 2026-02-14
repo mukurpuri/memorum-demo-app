@@ -21,6 +21,7 @@ model User {
   sessions      Session[]
   teams         TeamMember[]
   subscription  Subscription?
+  preferences   UserPreferences?
 }
 
 model Session {
@@ -88,4 +89,51 @@ enum SubscriptionStatus {
   PAST_DUE
   CANCELED
   TRIALING
+}
+
+// User Preferences Model
+// Stores user-specific settings and customization options
+model UserPreferences {
+  id                  String   @id @default(cuid())
+  userId              String   @unique
+  
+  // Display preferences
+  theme               Theme    @default(SYSTEM)
+  language            String   @default("en")
+  timezone            String   @default("UTC")
+  dateFormat          String   @default("MM/DD/YYYY")
+  
+  // Notification preferences
+  emailNotifications  Boolean  @default(true)
+  pushNotifications   Boolean  @default(true)
+  weeklyDigest        Boolean  @default(true)
+  marketingEmails     Boolean  @default(false)
+  
+  // Feature preferences
+  compactMode         Boolean  @default(false)
+  showTutorials       Boolean  @default(true)
+  keyboardShortcuts   Boolean  @default(true)
+  
+  // Privacy preferences
+  profileVisibility   Visibility @default(TEAM)
+  activityVisibility  Visibility @default(TEAM)
+  
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+  
+  user                User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@index([userId])
+}
+
+enum Theme {
+  LIGHT
+  DARK
+  SYSTEM
+}
+
+enum Visibility {
+  PUBLIC
+  TEAM
+  PRIVATE
 }
