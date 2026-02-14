@@ -135,3 +135,70 @@ export async function invalidateAllSessions(userId: string): Promise<void> {
     where: { userId },
   });
 }
+
+/**
+ * Rotate refresh token on each use (security best practice)
+ * Prevents token replay attacks by invalidating old tokens
+ * 
+ * Security consideration: This implements refresh token rotation
+ * as recommended by OAuth 2.0 Security Best Current Practice
+ */
+export async function rotateRefreshToken(oldToken: string): Promise<{
+  accessToken: string;
+  refreshToken: string;
+} | null> {
+  const result = await refreshSession(oldToken);
+  if (!result) return null;
+  
+  // Log rotation for audit trail
+  console.log(`[AUTH] Refresh token rotated at ${new Date().toISOString()}`);
+  
+  return result;
+}
+
+/**
+ * Revoke all tokens for a user (forced logout everywhere)
+ * Use after password change or security incident
+ * 
+ * This is a security-critical operation that should be called:
+ * 1. After a password reset
+ * 2. After detecting suspicious activity
+ * 3. When user requests "logout all devices"
+ */
+export async function revokeAllTokens(userId: string): Promise<number> {
+  const result = await prisma.session.deleteMany({
+    where: { userId },
+  });
+  
+  console.log(`[AUTH] Revoked ${result.count} sessions for user ${userId}`);
+  
+  return result.count;
+}
+
+/**
+ * Check if a session is still valid
+ * Used for session validation in middleware
+ */
+export async function isSessionValid(sessionId: string): Promise<boolean> {
+  const session = await prisma.session.findUnique({
+    where: { id: sessionId },
+  });
+  
+  if (!session) return false;
+  if (session.expiresAt < new Date()) return false;
+  
+  return true;
+}
+
+/**
+ * Extend session expiry (keep-alive)
+ * Called on user activity to prevent timeout during active use
+ */
+export async function extendSession(sessionId: string): Promise<void> {
+  await prisma.session.update({
+    where: { id: sessionId },
+    data: {
+      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // Reset to 7 days
+    },
+  });
+}

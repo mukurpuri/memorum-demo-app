@@ -67,3 +67,51 @@ export function forbiddenResponse(message: string): NextResponse {
     { status: 403 }
   );
 }
+
+/**
+ * Rate limit check for authentication endpoints
+ * Prevents brute force attacks on login
+ */
+const loginAttempts = new Map<string, { count: number; resetAt: number }>();
+
+export function checkLoginRateLimit(ip: string): { allowed: boolean; retryAfter?: number } {
+  const now = Date.now();
+  const windowMs = 15 * 60 * 1000; // 15 minutes
+  const maxAttempts = 5;
+  
+  const record = loginAttempts.get(ip);
+  
+  if (!record || record.resetAt < now) {
+    loginAttempts.set(ip, { count: 1, resetAt: now + windowMs });
+    return { allowed: true };
+  }
+  
+  if (record.count >= maxAttempts) {
+    const retryAfter = Math.ceil((record.resetAt - now) / 1000);
+    return { allowed: false, retryAfter };
+  }
+  
+  record.count++;
+  return { allowed: true };
+}
+
+/**
+ * Log authentication events for security audit
+ */
+export function logAuthEvent(
+  event: "login" | "logout" | "token_refresh" | "failed_login",
+  userId: string | null,
+  ip: string,
+  userAgent: string
+): void {
+  const logEntry = {
+    timestamp: new Date().toISOString(),
+    event,
+    userId,
+    ip,
+    userAgent: userAgent.substring(0, 100), // Truncate for storage
+  };
+  
+  // In production, send to logging service
+  console.log("[AUTH_AUDIT]", JSON.stringify(logEntry));
+}
