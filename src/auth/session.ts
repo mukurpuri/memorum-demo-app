@@ -1,3 +1,9 @@
+/**
+ * Session Management Module
+ * 
+ * Handles JWT-based authentication with refresh token rotation
+ * for enhanced security against token replay attacks.
+ */
 import jwt from "jsonwebtoken";
 import { prisma } from "@/db/client";
 import { User, Session } from "@prisma/client";
