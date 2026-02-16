@@ -205,6 +205,171 @@ export async function extendSession(sessionId: string): Promise<void> {
     where: { id: sessionId },
     data: {
       expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // Reset to 7 days
+      lastActivityAt: new Date(),
     },
   });
+}
+
+// ============================================================================
+// Session Analytics & Device Tracking
+// ============================================================================
+
+export interface DeviceInfo {
+  userAgent: string;
+  ip: string;
+  country?: string;
+  city?: string;
+  deviceType: "desktop" | "mobile" | "tablet" | "unknown";
+}
+
+export interface SessionWithDevice extends Session {
+  deviceInfo?: DeviceInfo;
+  lastActivityAt?: Date;
+}
+
+/**
+ * Create session with device tracking
+ * Records device fingerprint for security auditing
+ */
+export async function createSessionWithDevice(
+  user: User,
+  deviceInfo: DeviceInfo
+): Promise<{
+  accessToken: string;
+  refreshToken: string;
+  session: Session;
+}> {
+  const sessionId = crypto.randomUUID();
+  
+  const accessToken = jwt.sign(
+    {
+      userId: user.id,
+      email: user.email,
+      role: user.role,
+      sessionId,
+    } as TokenPayload,
+    JWT_SECRET,
+    { expiresIn: ACCESS_TOKEN_EXPIRY }
+  );
+  
+  const refreshToken = jwt.sign(
+    { sessionId, type: "refresh" },
+    JWT_SECRET,
+    { expiresIn: REFRESH_TOKEN_EXPIRY }
+  );
+  
+  const session = await prisma.session.create({
+    data: {
+      id: sessionId,
+      userId: user.id,
+      token: accessToken,
+      refreshToken,
+      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+      // Device tracking fields
+      userAgent: deviceInfo.userAgent,
+      ipAddress: deviceInfo.ip,
+      deviceType: deviceInfo.deviceType,
+      country: deviceInfo.country,
+      city: deviceInfo.city,
+      lastActivityAt: new Date(),
+    },
+  });
+  
+  console.log(`[AUTH] Session created for ${user.email} from ${deviceInfo.ip} (${deviceInfo.deviceType})`);
+  
+  return { accessToken, refreshToken, session };
+}
+
+/**
+ * Get all active sessions for a user with device info
+ * Used for "Active Sessions" UI in security settings
+ */
+export async function getUserSessions(userId: string): Promise<SessionWithDevice[]> {
+  const sessions = await prisma.session.findMany({
+    where: {
+      userId,
+      expiresAt: { gt: new Date() },
+    },
+    orderBy: { lastActivityAt: "desc" },
+  });
+  
+  return sessions.map(session => ({
+    ...session,
+    deviceInfo: {
+      userAgent: session.userAgent || "Unknown",
+      ip: session.ipAddress || "Unknown",
+      country: session.country || undefined,
+      city: session.city || undefined,
+      deviceType: (session.deviceType as DeviceInfo["deviceType"]) || "unknown",
+    },
+  }));
+}
+
+/**
+ * Detect suspicious session activity
+ * Returns true if the session shows signs of compromise
+ */
+export async function detectSuspiciousActivity(
+  sessionId: string,
+  currentIp: string
+): Promise<{ suspicious: boolean; reason?: string }> {
+  const session = await prisma.session.findUnique({
+    where: { id: sessionId },
+  });
+  
+  if (!session) {
+    return { suspicious: true, reason: "Session not found" };
+  }
+  
+  // Check for IP change (potential session hijacking)
+  if (session.ipAddress && session.ipAddress !== currentIp) {
+    console.log(`[SECURITY] IP change detected for session ${sessionId}: ${session.ipAddress} -> ${currentIp}`);
+    return { suspicious: true, reason: "IP address changed" };
+  }
+  
+  return { suspicious: false };
+}
+
+/**
+ * Get session analytics for admin dashboard
+ */
+export async function getSessionAnalytics(userId?: string): Promise<{
+  totalActive: number;
+  byDeviceType: Record<string, number>;
+  byCountry: Record<string, number>;
+  recentActivity: Date | null;
+}> {
+  const where = userId 
+    ? { userId, expiresAt: { gt: new Date() } }
+    : { expiresAt: { gt: new Date() } };
+  
+  const sessions = await prisma.session.findMany({ where });
+  
+  const byDeviceType: Record<string, number> = {};
+  const byCountry: Record<string, number> = {};
+  let recentActivity: Date | null = null;
+  
+  for (const session of sessions) {
+    // Count by device type
+    const device = session.deviceType || "unknown";
+    byDeviceType[device] = (byDeviceType[device] || 0) + 1;
+    
+    // Count by country
+    const country = session.country || "Unknown";
+    byCountry[country] = (byCountry[country] || 0) + 1;
+    
+    // Track most recent activity
+    if (session.lastActivityAt) {
+      if (!recentActivity || session.lastActivityAt > recentActivity) {
+        recentActivity = session.lastActivityAt;
+      }
+    }
+  }
+  
+  return {
+    totalActive: sessions.length,
+    byDeviceType,
+    byCountry,
+    recentActivity,
+  };
 }
