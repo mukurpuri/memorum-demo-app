@@ -279,7 +279,7 @@ async function handleSubscriptionDeleted(
 }
 
 /**
- * Handle successful payment - update subscription and log.
+ * Handle successful payment - update subscription, refill credits, and log.
  */
 async function handlePaymentSucceeded(invoice: Stripe.Invoice): Promise<void> {
   const customerId = invoice.customer as string;
@@ -301,7 +301,37 @@ async function handlePaymentSucceeded(invoice: Stripe.Invoice): Promise<void> {
     },
   });
   
+  // Refill credits on subscription renewal
+  // Credit amount based on plan tier (simplified - real implementation
+  // would look up price to determine credit allocation)
+  const subscription = await prisma.subscription.findUnique({
+    where: { stripeCustomerId: customerId },
+  });
+  
+  if (subscription) {
+    const creditAmount = getCreditAllocationForPlan(subscription.stripePriceId);
+    if (creditAmount > 0) {
+      await refillCredits(subscription.userId, creditAmount, invoice.id);
+    }
+  }
+  
   console.log(`[PAYMENTS] Payment succeeded: ${amountPaid / 100} ${invoice.currency.toUpperCase()}`);
+}
+
+/**
+ * Determine credit allocation based on subscription plan.
+ */
+function getCreditAllocationForPlan(priceId: string): number {
+  switch (priceId) {
+    case PRICE_IDS.STARTER:
+      return 100;
+    case PRICE_IDS.PRO:
+      return 500;
+    case PRICE_IDS.ENTERPRISE:
+      return 2000;
+    default:
+      return 0;
+  }
 }
 
 /**
@@ -429,4 +459,244 @@ function mapSubscriptionStatus(
     default:
       return "CANCELED";
   }
+}
+
+// ============================================================================
+// Credits System
+// ============================================================================
+
+/**
+ * User credit balance for metered features (API calls, storage, etc.)
+ * Credits are consumed as users use features, refilled on subscription renewal.
+ */
+export interface CreditBalance {
+  userId: string;
+  available: number;
+  reserved: number;  // Held during in-flight operations
+  lastRefill: Date;
+  expiresAt: Date | null;
+}
+
+/**
+ * Reserve credits for an operation.
+ * CRITICAL: Must be atomic to prevent double-spending.
+ * Returns reservation ID if successful, null if insufficient balance.
+ */
+export async function reserveCredits(
+  userId: string,
+  amount: number,
+  operationId: string
+): Promise<string | null> {
+  // Atomic reservation using transaction
+  const result = await prisma.$transaction(async (tx) => {
+    const balance = await tx.creditBalance.findUnique({
+      where: { userId },
+    });
+    
+    if (!balance || balance.available < amount) {
+      return null;
+    }
+    
+    // Check expiry
+    if (balance.expiresAt && balance.expiresAt < new Date()) {
+      return null;
+    }
+    
+    // Reserve credits atomically
+    await tx.creditBalance.update({
+      where: { userId },
+      data: {
+        available: { decrement: amount },
+        reserved: { increment: amount },
+      },
+    });
+    
+    // Create reservation record
+    const reservation = await tx.creditReservation.create({
+      data: {
+        userId,
+        amount,
+        operationId,
+        status: "PENDING",
+        expiresAt: new Date(Date.now() + 5 * 60 * 1000), // 5 min timeout
+      },
+    });
+    
+    return reservation.id;
+  });
+  
+  return result;
+}
+
+/**
+ * Commit a credit reservation (operation succeeded).
+ * Removes reserved credits permanently.
+ */
+export async function commitCredits(reservationId: string): Promise<boolean> {
+  try {
+    await prisma.$transaction(async (tx) => {
+      const reservation = await tx.creditReservation.findUnique({
+        where: { id: reservationId },
+      });
+      
+      if (!reservation || reservation.status !== "PENDING") {
+        throw new Error("Invalid reservation");
+      }
+      
+      // Consume reserved credits
+      await tx.creditBalance.update({
+        where: { userId: reservation.userId },
+        data: {
+          reserved: { decrement: reservation.amount },
+        },
+      });
+      
+      // Mark reservation as committed
+      await tx.creditReservation.update({
+        where: { id: reservationId },
+        data: { status: "COMMITTED", committedAt: new Date() },
+      });
+    });
+    
+    return true;
+  } catch (error) {
+    console.error("[PAYMENTS] Failed to commit credits:", error);
+    return false;
+  }
+}
+
+/**
+ * Release a credit reservation (operation failed/canceled).
+ * Returns reserved credits to available balance.
+ */
+export async function releaseCredits(reservationId: string): Promise<boolean> {
+  try {
+    await prisma.$transaction(async (tx) => {
+      const reservation = await tx.creditReservation.findUnique({
+        where: { id: reservationId },
+      });
+      
+      if (!reservation || reservation.status !== "PENDING") {
+        throw new Error("Invalid reservation");
+      }
+      
+      // Return credits to available
+      await tx.creditBalance.update({
+        where: { userId: reservation.userId },
+        data: {
+          available: { increment: reservation.amount },
+          reserved: { decrement: reservation.amount },
+        },
+      });
+      
+      // Mark reservation as released
+      await tx.creditReservation.update({
+        where: { id: reservationId },
+        data: { status: "RELEASED", releasedAt: new Date() },
+      });
+    });
+    
+    return true;
+  } catch (error) {
+    console.error("[PAYMENTS] Failed to release credits:", error);
+    return false;
+  }
+}
+
+/**
+ * Refill credits on subscription renewal.
+ * CRITICAL: Must be idempotent - called from webhook.
+ */
+export async function refillCredits(
+  userId: string,
+  amount: number,
+  invoiceId: string
+): Promise<boolean> {
+  try {
+    // Idempotency check - don't double-refill
+    const existingRefill = await prisma.creditRefill.findFirst({
+      where: { invoiceId },
+    });
+    
+    if (existingRefill) {
+      console.log(`[PAYMENTS] Credit refill already processed for invoice ${invoiceId}`);
+      return true;
+    }
+    
+    await prisma.$transaction(async (tx) => {
+      // Add credits
+      await tx.creditBalance.upsert({
+        where: { userId },
+        create: {
+          userId,
+          available: amount,
+          reserved: 0,
+          lastRefill: new Date(),
+          expiresAt: null,
+        },
+        update: {
+          available: { increment: amount },
+          lastRefill: new Date(),
+        },
+      });
+      
+      // Record refill for idempotency
+      await tx.creditRefill.create({
+        data: {
+          userId,
+          amount,
+          invoiceId,
+        },
+      });
+    });
+    
+    console.log(`[PAYMENTS] Refilled ${amount} credits for user ${userId}`);
+    return true;
+  } catch (error) {
+    console.error("[PAYMENTS] Failed to refill credits:", error);
+    return false;
+  }
+}
+
+/**
+ * Get current credit balance for a user.
+ */
+export async function getCreditBalance(userId: string): Promise<CreditBalance | null> {
+  const balance = await prisma.creditBalance.findUnique({
+    where: { userId },
+  });
+  
+  if (!balance) return null;
+  
+  return {
+    userId: balance.userId,
+    available: balance.available,
+    reserved: balance.reserved,
+    lastRefill: balance.lastRefill,
+    expiresAt: balance.expiresAt,
+  };
+}
+
+/**
+ * Cleanup expired reservations and release credits.
+ * Should be run periodically (cron job).
+ */
+export async function cleanupExpiredReservations(): Promise<number> {
+  const now = new Date();
+  
+  const expiredReservations = await prisma.creditReservation.findMany({
+    where: {
+      status: "PENDING",
+      expiresAt: { lt: now },
+    },
+  });
+  
+  let released = 0;
+  for (const reservation of expiredReservations) {
+    const success = await releaseCredits(reservation.id);
+    if (success) released++;
+  }
+  
+  console.log(`[PAYMENTS] Released ${released} expired credit reservations`);
+  return released;
 }
