@@ -32,10 +32,25 @@ model Session {
   expiresAt    DateTime
   createdAt    DateTime @default(now())
   
+  // Device tracking for security auditing
+  userAgent      String?
+  ipAddress      String?
+  deviceType     String?   // "desktop" | "mobile" | "tablet" | "unknown"
+  country        String?
+  city           String?
+  lastActivityAt DateTime?
+  
+  // Security flags
+  isSuspicious   Boolean  @default(false)
+  revokedAt      DateTime?
+  revokedReason  String?
+  
   user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   
   @@index([userId])
   @@index([token])
+  @@index([ipAddress])
+  @@index([lastActivityAt])
 }
 
 model Team {
