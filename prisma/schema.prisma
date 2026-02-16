@@ -82,8 +82,48 @@ model Subscription {
   status           SubscriptionStatus
   currentPeriodEnd DateTime
   createdAt        DateTime @default(now())
+  canceledAt       DateTime?
   
   user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+// ============================================================================
+// Payment Events (Audit Trail)
+// ============================================================================
+
+// Tracks all payment-related events for audit and reconciliation
+model PaymentEvent {
+  id               String   @id @default(cuid())
+  stripeCustomerId String
+  eventType        PaymentEventType
+  amount           Int      // Amount in cents
+  currency         String   @default("usd")
+  
+  // Stripe references
+  invoiceId        String?
+  chargeId         String?
+  
+  // Additional context
+  metadata         Json?
+  requiresAction   Boolean  @default(false)
+  
+  createdAt        DateTime @default(now())
+  
+  @@index([stripeCustomerId])
+  @@index([eventType])
+  @@index([createdAt])
+  @@index([requiresAction])
+}
+
+enum PaymentEventType {
+  PAYMENT_SUCCEEDED
+  PAYMENT_FAILED
+  REFUNDED
+  DISPUTE_CREATED
+  DISPUTE_RESOLVED
+  SUBSCRIPTION_CREATED
+  SUBSCRIPTION_UPDATED
+  SUBSCRIPTION_CANCELED
 }
 
 enum Role {
