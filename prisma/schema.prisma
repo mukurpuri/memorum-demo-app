@@ -192,3 +192,62 @@ enum Visibility {
   TEAM
   PRIVATE
 }
+
+// ============================================================================
+// Credits System (Metered Billing)
+// ============================================================================
+
+// Tracks user's credit balance for metered features
+model CreditBalance {
+  id          String    @id @default(cuid())
+  userId      String    @unique
+  available   Int       @default(0)    // Credits available for use
+  reserved    Int       @default(0)    // Credits held during in-flight ops
+  lastRefill  DateTime  @default(now())
+  expiresAt   DateTime?
+  
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+// Credit reservations for atomic operations
+model CreditReservation {
+  id          String              @id @default(cuid())
+  userId      String
+  amount      Int
+  operationId String              @unique  // Idempotency key
+  status      ReservationStatus   @default(PENDING)
+  expiresAt   DateTime
+  
+  committedAt DateTime?
+  releasedAt  DateTime?
+  
+  createdAt   DateTime  @default(now())
+  
+  @@index([userId])
+  @@index([status])
+  @@index([expiresAt])
+}
+
+// Credit refills from subscription renewals (idempotency)
+model CreditRefill {
+  id        String   @id @default(cuid())
+  userId    String
+  amount    Int
+  invoiceId String   @unique  // Stripe invoice ID for idempotency
+  
+  createdAt DateTime @default(now())
+  
+  @@index([userId])
+  @@index([invoiceId])
+}
+
+enum ReservationStatus {
+  PENDING
+  COMMITTED
+  RELEASED
+  EXPIRED
+}
