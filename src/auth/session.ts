@@ -3,10 +3,20 @@
  * 
  * Handles JWT-based authentication with refresh token rotation
  * for enhanced security against token replay attacks.
+ * 
+ * All authentication events are logged to the audit trail for
+ * compliance (SOC2, GDPR) and security monitoring.
  */
 import jwt from "jsonwebtoken";
 import { prisma } from "@/db/client";
 import { User, Session } from "@prisma/client";
+import { 
+  logAuthSuccess, 
+  logAuthFailure, 
+  logSessionRevoked,
+  logSuspiciousActivity,
+  AuditContext 
+} from "@/audit/logger";
 
 const JWT_SECRET = process.env.JWT_SECRET!;
 const ACCESS_TOKEN_EXPIRY = "15m";
@@ -170,13 +180,38 @@ export async function rotateRefreshToken(oldToken: string): Promise<{
  * 1. After a password reset
  * 2. After detecting suspicious activity
  * 3. When user requests "logout all devices"
+ * 
+ * Audit: Logs SESSION_REVOKED for each session with reason
  */
-export async function revokeAllTokens(userId: string): Promise<number> {
+export async function revokeAllTokens(
+  userId: string,
+  reason: "user_logout" | "admin_action" | "security_policy" | "password_change" = "user_logout",
+  auditContext?: Partial<AuditContext>
+): Promise<number> {
+  // Get sessions before deleting for audit logging
+  const sessions = await prisma.session.findMany({
+    where: { userId },
+    select: { id: true, ipAddress: true, userAgent: true },
+  });
+  
   const result = await prisma.session.deleteMany({
     where: { userId },
   });
   
-  console.log(`[AUTH] Revoked ${result.count} sessions for user ${userId}`);
+  // Log each revocation to audit trail
+  for (const session of sessions) {
+    await logSessionRevoked(
+      {
+        userId,
+        sessionId: session.id,
+        ipAddress: auditContext?.ipAddress || session.ipAddress || undefined,
+        userAgent: auditContext?.userAgent || session.userAgent || undefined,
+      },
+      reason
+    );
+  }
+  
+  console.log(`[AUTH] Revoked ${result.count} sessions for user ${userId} (reason: ${reason})`);
   
   return result.count;
 }
@@ -230,6 +265,8 @@ export interface SessionWithDevice extends Session {
 /**
  * Create session with device tracking
  * Records device fingerprint for security auditing
+ * 
+ * Audit: Logs SESSION_CREATED and LOGIN_SUCCESS events
  */
 export async function createSessionWithDevice(
   user: User,
@@ -275,6 +312,15 @@ export async function createSessionWithDevice(
     },
   });
   
+  // Log successful authentication to audit trail
+  const auditContext: AuditContext = {
+    userId: user.id,
+    sessionId,
+    ipAddress: deviceInfo.ip,
+    userAgent: deviceInfo.userAgent,
+  };
+  await logAuthSuccess(auditContext, "password");
+  
   console.log(`[AUTH] Session created for ${user.email} from ${deviceInfo.ip} (${deviceInfo.deviceType})`);
   
   return { accessToken, refreshToken, session };
@@ -308,6 +354,8 @@ export async function getUserSessions(userId: string): Promise<SessionWithDevice
 /**
  * Detect suspicious session activity
  * Returns true if the session shows signs of compromise
+ * 
+ * Audit: Logs SUSPICIOUS_ACTIVITY events with CRITICAL severity
  */
 export async function detectSuspiciousActivity(
   sessionId: string,
@@ -315,6 +363,7 @@ export async function detectSuspiciousActivity(
 ): Promise<{ suspicious: boolean; reason?: string }> {
   const session = await prisma.session.findUnique({
     where: { id: sessionId },
+    include: { user: true },
   });
   
   if (!session) {
@@ -324,6 +373,28 @@ export async function detectSuspiciousActivity(
   // Check for IP change (potential session hijacking)
   if (session.ipAddress && session.ipAddress !== currentIp) {
     console.log(`[SECURITY] IP change detected for session ${sessionId}: ${session.ipAddress} -> ${currentIp}`);
+    
+    // Log to audit trail with CRITICAL severity
+    await logSuspiciousActivity(
+      {
+        userId: session.userId,
+        sessionId,
+        ipAddress: currentIp,
+      },
+      "IP address changed mid-session",
+      {
+        previousIp: session.ipAddress,
+        newIp: currentIp,
+        country: session.country,
+      }
+    );
+    
+    // Mark session as suspicious in database
+    await prisma.session.update({
+      where: { id: sessionId },
+      data: { isSuspicious: true },
+    });
+    
     return { suspicious: true, reason: "IP address changed" };
   }
   
