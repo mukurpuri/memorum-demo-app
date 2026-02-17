@@ -18,10 +18,16 @@ model User {
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
   
+  // Two-Factor Authentication
+  twoFactorEnabled    Boolean   @default(false)
+  twoFactorSecret     String?   // Encrypted TOTP secret
+  twoFactorBackupCodes String[] // Hashed backup codes
+  
   sessions      Session[]
   teams         TeamMember[]
   subscription  Subscription?
   preferences   UserPreferences?
+  twoFactorAuth TwoFactorAuth?
 }
 
 model Session {
@@ -269,4 +275,66 @@ enum AuditSeverity {
   INFO
   WARNING
   CRITICAL
+}
+
+// ============================================================================
+// Two-Factor Authentication
+// ============================================================================
+
+// Stores 2FA configuration and recovery options for users
+// Security-critical: secrets are encrypted, backup codes are hashed
+model TwoFactorAuth {
+  id              String    @id @default(cuid())
+  userId          String    @unique
+  
+  // TOTP Configuration
+  secret          String    // Encrypted with AES-256-GCM
+  algorithm       String    @default("SHA1")  // SHA1, SHA256, SHA512
+  digits          Int       @default(6)       // 6 or 8 digit codes
+  period          Int       @default(30)      // Seconds per code
+  
+  // Recovery
+  backupCodes     String[]  // Hashed with bcrypt, single-use
+  backupCodesUsed Int       @default(0)
+  
+  // Status
+  verified        Boolean   @default(false)   // User completed setup
+  enabledAt       DateTime?
+  lastUsedAt      DateTime?
+  
+  // Security
+  failedAttempts  Int       @default(0)
+  lockedUntil     DateTime?
+  
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@index([userId])
+}
+
+// Tracks 2FA verification attempts for rate limiting and security monitoring
+model TwoFactorAttempt {
+  id          String    @id @default(cuid())
+  userId      String
+  ipAddress   String?
+  userAgent   String?
+  
+  method      TwoFactorMethod
+  success     Boolean
+  failReason  String?   // "invalid_code", "expired", "locked", etc.
+  
+  createdAt   DateTime  @default(now())
+  
+  @@index([userId])
+  @@index([ipAddress])
+  @@index([createdAt])
+}
+
+enum TwoFactorMethod {
+  TOTP          // Time-based one-time password (authenticator app)
+  BACKUP_CODE   // Single-use recovery code
+  SMS           // SMS verification (if enabled)
+  EMAIL         // Email verification (if enabled)
 }
