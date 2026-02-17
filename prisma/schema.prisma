@@ -192,3 +192,81 @@ enum Visibility {
   TEAM
   PRIVATE
 }
+
+// ============================================================================
+// Audit Logging System
+// ============================================================================
+
+// Comprehensive audit trail for security-sensitive actions
+// Required for compliance (SOC2, GDPR) and incident investigation
+model AuditLog {
+  id          String      @id @default(cuid())
+  
+  // Who performed the action
+  userId      String?     // Null for system actions or unauthenticated
+  sessionId   String?     // Link to session for device context
+  ipAddress   String?
+  userAgent   String?
+  
+  // What happened
+  action      AuditAction
+  resource    String      // e.g., "user", "session", "subscription"
+  resourceId  String?     // ID of the affected resource
+  
+  // Context
+  details     Json?       // Additional context (varies by action)
+  severity    AuditSeverity @default(INFO)
+  
+  // Outcome
+  success     Boolean     @default(true)
+  errorCode   String?
+  errorMessage String?
+  
+  // Timestamps
+  createdAt   DateTime    @default(now())
+  
+  @@index([userId])
+  @@index([action])
+  @@index([resource])
+  @@index([severity])
+  @@index([createdAt])
+  @@index([ipAddress])
+}
+
+enum AuditAction {
+  // Authentication
+  LOGIN_SUCCESS
+  LOGIN_FAILED
+  LOGOUT
+  SESSION_CREATED
+  SESSION_REVOKED
+  SESSION_EXPIRED
+  PASSWORD_CHANGED
+  PASSWORD_RESET_REQUESTED
+  PASSWORD_RESET_COMPLETED
+  
+  // Authorization
+  PERMISSION_DENIED
+  ROLE_CHANGED
+  
+  // Data access
+  DATA_EXPORTED
+  DATA_DELETED
+  
+  // Admin actions
+  USER_CREATED
+  USER_DELETED
+  USER_SUSPENDED
+  SETTINGS_CHANGED
+  
+  // Security events
+  SUSPICIOUS_ACTIVITY
+  RATE_LIMIT_EXCEEDED
+  IP_BLOCKED
+}
+
+enum AuditSeverity {
+  INFO
+  WARNING
+  CRITICAL
+}
