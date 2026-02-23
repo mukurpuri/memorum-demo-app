@@ -14,6 +14,14 @@ const envSchema = z.object({
   // App
   NEXT_PUBLIC_APP_URL: z.string().url().default("http://localhost:3000"),
   NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
+
+  // Memorum: WSS threshold for PR significance (must be < 0.40)
+  WSS_THRESHOLD: z.coerce
+    .number()
+    .min(0)
+    .max(1)
+    .default(0.35)
+    .refine((n) => n < 0.4, { message: "WSS threshold must be less than 0.40" }),
 });
 
 export type Env = z.infer<typeof envSchema>;
