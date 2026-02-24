@@ -69,6 +69,17 @@ export async function GET(request: NextRequest) {
   }
   
   // Parse query parameters
+  /**
+   * Query params:
+   * - userId: Filter by user
+   * - action: Filter by action type
+   * - resource: Filter by resource type
+   * - severity: Filter by severity level
+   * - startDate: ISO date string
+   * - endDate: ISO date string
+   * - limit: Number of results (default 50, max 200)
+   * - offset: Pagination offset
+   */
   const searchParams = request.nextUrl.searchParams;
   
   const params: AuditQueryParams = {
@@ -136,6 +147,11 @@ export async function POST(request: NextRequest) {
     );
   }
   
+  /**
+   * Body:
+   * - userId: User ID to get security events for
+   * - days: Number of days to get security events for (default 30)
+   */
   try {
     const body = await request.json();
     const { userId, days = 30 } = body;
