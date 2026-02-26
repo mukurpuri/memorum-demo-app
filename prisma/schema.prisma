@@ -270,3 +270,136 @@ enum AuditSeverity {
   WARNING
   CRITICAL
 }
+
+// ============================================================================
+// AI Assistant System
+// ============================================================================
+
+model Organization {
+  id              String   @id @default(cuid())
+  name            String
+  slug            String   @unique
+  plan            OrgPlan  @default(FREE)
+  costLimit       Float?
+  warningThreshold Float?  @default(80)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  assistants      AiAssistant[]
+  conversations   AiConversation[]
+  usage           AiUsage[]
+  auditLogs       OrgAuditLog[]
+
+  @@index([slug])
+}
+
+enum OrgPlan {
+  FREE
+  STARTER
+  PRO
+  ENTERPRISE
+}
+
+model AiAssistant {
+  id              String   @id @default(cuid())
+  organizationId  String
+  createdById     String?
+  
+  name            String
+  description     String?
+  model           String
+  temperature     Float    @default(0.7)
+  maxTokens       Int      @default(2000)
+  systemPrompt    String
+  
+  capabilities    Json     @default("{}")
+  permissions     Json     @default("{}")
+  metadata        Json     @default("{}")
+  
+  isActive        Boolean  @default(true)
+  usageCount      Int      @default(0)
+  lastUsedAt      DateTime?
+  
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  
+  organization    Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  conversations   AiConversation[]
+  usage           AiUsage[]
+  
+  @@index([organizationId])
+  @@index([isActive])
+}
+
+model AiConversation {
+  id              String   @id @default(cuid())
+  userId          String
+  assistantId     String
+  organizationId  String
+  
+  title           String
+  isArchived      Boolean  @default(false)
+  
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  
+  organization    Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  assistant       AiAssistant  @relation(fields: [assistantId], references: [id], onDelete: Cascade)
+  messages        AiMessage[]
+  
+  @@index([userId])
+  @@index([organizationId])
+  @@index([assistantId])
+}
+
+model AiMessage {
+  id              String   @id @default(cuid())
+  conversationId  String
+  
+  role            String   // "user" | "assistant" | "system"
+  content         String
+  tokensUsed      Int?
+  metadata        Json     @default("{}")
+  
+  createdAt       DateTime @default(now())
+  
+  conversation    AiConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  
+  @@index([conversationId])
+}
+
+model AiUsage {
+  id              String   @id @default(cuid())
+  organizationId  String
+  userId          String
+  assistantId     String
+  
+  tokensUsed      Int
+  cost            Float
+  model           String
+  
+  createdAt       DateTime @default(now())
+  
+  organization    Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  assistant       AiAssistant  @relation(fields: [assistantId], references: [id], onDelete: Cascade)
+  
+  @@index([organizationId])
+  @@index([userId])
+  @@index([assistantId])
+  @@index([createdAt])
+}
+
+model OrgAuditLog {
+  id              String   @id @default(cuid())
+  organizationId  String
+  userId          String
+  action          String
+  metadata        Json     @default("{}")
+  timestamp       DateTime @default(now())
+  
+  organization    Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  
+  @@index([organizationId])
+  @@index([action])
+  @@index([timestamp])
+}
