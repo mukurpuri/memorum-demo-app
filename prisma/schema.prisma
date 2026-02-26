@@ -22,6 +22,7 @@ model User {
   teams         TeamMember[]
   subscription  Subscription?
   preferences   UserPreferences?
+  twoFactorAuth TwoFactorAuth?
 }
 
 model Session {
@@ -194,6 +195,61 @@ enum Visibility {
 }
 
 // ============================================================================
+// Two-Factor Authentication (2FA)
+// ============================================================================
+
+// Stores 2FA configuration and backup codes for users
+// Security-critical: secrets must be encrypted at rest
+model TwoFactorAuth {
+  id              String   @id @default(cuid())
+  userId          String   @unique
+  
+  // TOTP Configuration
+  secret          String   // Encrypted TOTP secret
+  algorithm       String   @default("SHA1")
+  digits          Int      @default(6)
+  period          Int      @default(30)
+  
+  // Status
+  enabled         Boolean  @default(false)
+  verifiedAt      DateTime?
+  
+  // Backup codes (hashed)
+  backupCodes     String[] // Array of hashed backup codes
+  backupCodesUsed Int      @default(0)
+  
+  // Recovery
+  recoveryEmail   String?
+  recoveryPhone   String?
+  
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@index([userId])
+}
+
+// Tracks 2FA verification attempts for rate limiting and security
+model TwoFactorAttempt {
+  id          String   @id @default(cuid())
+  userId      String
+  
+  // Attempt details
+  successful  Boolean
+  method      TwoFactorMethod
+  ipAddress   String?
+  userAgent   String?
+  
+  // For rate limiting
+  createdAt   DateTime @default(now())
+  
+  @@index([userId])
+  @@index([createdAt])
+  @@index([ipAddress])
+}
+
+// ============================================================================
 // Audit Logging System
 // ============================================================================
 
@@ -269,4 +325,11 @@ enum AuditSeverity {
   INFO
   WARNING
   CRITICAL
+}
+
+enum TwoFactorMethod {
+  TOTP        // Time-based OTP (authenticator app)
+  SMS         // SMS verification code
+  EMAIL       // Email verification code
+  BACKUP_CODE // One-time backup code
 }

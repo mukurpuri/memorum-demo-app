@@ -430,3 +430,273 @@ function mapSubscriptionStatus(
       return "CANCELED";
   }
 }
+
+// ============================================================================
+// Subscription Management (Upgrades, Downgrades, Prorations)
+// ============================================================================
+
+export interface SubscriptionChangeResult {
+  success: boolean;
+  subscription?: Stripe.Subscription;
+  prorationAmount?: number;
+  error?: string;
+}
+
+export interface UpcomingInvoicePreview {
+  amountDue: number;
+  currency: string;
+  prorationAmount: number;
+  nextBillingDate: Date;
+  lineItems: {
+    description: string;
+    amount: number;
+  }[];
+}
+
+/**
+ * Upgrade or downgrade subscription to a different plan
+ * 
+ * CRITICAL: Handles proration correctly to avoid over/under-charging
+ * - Upgrade: Charges prorated amount immediately
+ * - Downgrade: Credits remaining time on next invoice
+ */
+export async function changeSubscriptionPlan(
+  subscriptionId: string,
+  newPriceId: string,
+  prorationBehavior: "create_prorations" | "none" | "always_invoice" = "create_prorations"
+): Promise<SubscriptionChangeResult> {
+  try {
+    const subscription = await stripe.subscriptions.retrieve(subscriptionId);
+    const currentPriceId = subscription.items.data[0].price.id;
+    
+    if (currentPriceId === newPriceId) {
+      return { success: false, error: "Already on this plan" };
+    }
+    
+    const updatedSubscription = await stripe.subscriptions.update(subscriptionId, {
+      items: [{
+        id: subscription.items.data[0].id,
+        price: newPriceId,
+      }],
+      proration_behavior: prorationBehavior,
+    });
+    
+    // Calculate proration amount from latest invoice
+    const invoices = await stripe.invoices.list({
+      subscription: subscriptionId,
+      limit: 1,
+    });
+    
+    const prorationAmount = invoices.data[0]?.amount_due || 0;
+    
+    console.log(`[PAYMENTS] Subscription ${subscriptionId} changed from ${currentPriceId} to ${newPriceId}`);
+    
+    return {
+      success: true,
+      subscription: updatedSubscription,
+      prorationAmount,
+    };
+  } catch (error) {
+    console.error("[PAYMENTS] Failed to change subscription:", error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Unknown error",
+    };
+  }
+}
+
+/**
+ * Preview what a subscription change would cost
+ * Use before confirming upgrade/downgrade to show user the proration
+ */
+export async function previewSubscriptionChange(
+  customerId: string,
+  subscriptionId: string,
+  newPriceId: string
+): Promise<UpcomingInvoicePreview | null> {
+  try {
+    const subscription = await stripe.subscriptions.retrieve(subscriptionId);
+    
+    const upcomingInvoice = await stripe.invoices.retrieveUpcoming({
+      customer: customerId,
+      subscription: subscriptionId,
+      subscription_items: [{
+        id: subscription.items.data[0].id,
+        price: newPriceId,
+      }],
+      subscription_proration_behavior: "create_prorations",
+    });
+    
+    // Calculate proration from line items
+    let prorationAmount = 0;
+    const lineItems: { description: string; amount: number }[] = [];
+    
+    for (const line of upcomingInvoice.lines.data) {
+      lineItems.push({
+        description: line.description || "Subscription",
+        amount: line.amount,
+      });
+      
+      if (line.proration) {
+        prorationAmount += line.amount;
+      }
+    }
+    
+    return {
+      amountDue: upcomingInvoice.amount_due,
+      currency: upcomingInvoice.currency,
+      prorationAmount,
+      nextBillingDate: new Date(upcomingInvoice.period_end * 1000),
+      lineItems,
+    };
+  } catch (error) {
+    console.error("[PAYMENTS] Failed to preview subscription change:", error);
+    return null;
+  }
+}
+
+/**
+ * Apply a coupon/discount to an existing subscription
+ */
+export async function applySubscriptionDiscount(
+  subscriptionId: string,
+  couponId: string
+): Promise<SubscriptionChangeResult> {
+  try {
+    const subscription = await stripe.subscriptions.update(subscriptionId, {
+      coupon: couponId,
+    });
+    
+    console.log(`[PAYMENTS] Coupon ${couponId} applied to subscription ${subscriptionId}`);
+    
+    return { success: true, subscription };
+  } catch (error) {
+    console.error("[PAYMENTS] Failed to apply coupon:", error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Unknown error",
+    };
+  }
+}
+
+/**
+ * Pause a subscription (keep it active but don't charge)
+ * Useful for temporary account holds
+ */
+export async function pauseSubscription(
+  subscriptionId: string,
+  resumeDate?: Date
+): Promise<SubscriptionChangeResult> {
+  try {
+    const pauseConfig: Stripe.SubscriptionUpdateParams.PauseCollection = {
+      behavior: resumeDate ? "void" : "mark_uncollectible",
+    };
+    
+    if (resumeDate) {
+      pauseConfig.resumes_at = Math.floor(resumeDate.getTime() / 1000);
+    }
+    
+    const subscription = await stripe.subscriptions.update(subscriptionId, {
+      pause_collection: pauseConfig,
+    });
+    
+    console.log(`[PAYMENTS] Subscription ${subscriptionId} paused`);
+    
+    return { success: true, subscription };
+  } catch (error) {
+    console.error("[PAYMENTS] Failed to pause subscription:", error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Unknown error",
+    };
+  }
+}
+
+/**
+ * Resume a paused subscription
+ */
+export async function resumeSubscription(
+  subscriptionId: string
+): Promise<SubscriptionChangeResult> {
+  try {
+    const subscription = await stripe.subscriptions.update(subscriptionId, {
+      pause_collection: "",
+    });
+    
+    console.log(`[PAYMENTS] Subscription ${subscriptionId} resumed`);
+    
+    return { success: true, subscription };
+  } catch (error) {
+    console.error("[PAYMENTS] Failed to resume subscription:", error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Unknown error",
+    };
+  }
+}
+
+/**
+ * Add a one-time charge to a subscription's next invoice
+ * Useful for add-ons, overage charges, etc.
+ */
+export async function addInvoiceItem(
+  customerId: string,
+  amount: number,
+  description: string,
+  subscriptionId?: string
+): Promise<Stripe.InvoiceItem | null> {
+  try {
+    const invoiceItem = await stripe.invoiceItems.create({
+      customer: customerId,
+      amount,
+      currency: "usd",
+      description,
+      subscription: subscriptionId,
+    });
+    
+    console.log(`[PAYMENTS] Invoice item added: ${description} ($${amount / 100})`);
+    
+    return invoiceItem;
+  } catch (error) {
+    console.error("[PAYMENTS] Failed to add invoice item:", error);
+    return null;
+  }
+}
+
+/**
+ * Get subscription usage and billing summary
+ */
+export async function getSubscriptionSummary(subscriptionId: string): Promise<{
+  status: string;
+  currentPlan: string;
+  currentPeriodEnd: Date;
+  cancelAtPeriodEnd: boolean;
+  upcomingInvoiceAmount: number | null;
+} | null> {
+  try {
+    const subscription = await stripe.subscriptions.retrieve(subscriptionId, {
+      expand: ["latest_invoice"],
+    });
+    
+    let upcomingInvoiceAmount: number | null = null;
+    try {
+      const upcoming = await stripe.invoices.retrieveUpcoming({
+        subscription: subscriptionId,
+      });
+      upcomingInvoiceAmount = upcoming.amount_due;
+    } catch {
+      // No upcoming invoice (subscription ending)
+    }
+    
+    return {
+      status: subscription.status,
+      currentPlan: subscription.items.data[0].price.id,
+      currentPeriodEnd: new Date(subscription.current_period_end * 1000),
+      cancelAtPeriodEnd: subscription.cancel_at_period_end,
+      upcomingInvoiceAmount,
+    };
+  } catch (error) {
+    console.error("[PAYMENTS] Failed to get subscription summary:", error);
+    return null;
+  }
+}
